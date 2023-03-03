@@ -29,6 +29,7 @@ import io.swagger.v3.oas.models.tags.Tag;
 
 import org.apache.commons.io.FileUtils;
 import org.openapitools.codegen.api.TemplatePathLocator;
+import org.openapitools.codegen.config.GlobalSettings;
 import org.openapitools.codegen.ignore.CodegenIgnoreProcessor;
 import org.openapitools.codegen.model.ModelMap;
 import org.openapitools.codegen.model.ModelsMap;
@@ -104,6 +105,8 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     private Map<String, String> enumToTag = new LinkedHashMap<>();
     // for apis.tags tag api definition
     private Map<String, String> tagEnumToApiClassname = new LinkedHashMap<>();
+
+    private boolean nonCompliantUseDiscrIfCompositionFails = false;
 
     public PythonClientCodegen() {
         super();
@@ -202,7 +205,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
                 .defaultValue("1.0.0"));
         cliOptions.add(new CliOption(PACKAGE_URL, "python package URL."));
         // this generator does not use SORT_PARAMS_BY_REQUIRED_FLAG
-        // this generator uses the following order for endpoint paramters and model properties
+        // this generator uses the following order for endpoint parameters and model properties
         // required params
         // optional params which are set to unset as their default for method signatures only
         // optional params as **kwargs
@@ -215,6 +218,13 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         cliOptions.add(new CliOption(RECURSION_LIMIT, "Set the recursion limit. If not set, use the system default value."));
         cliOptions.add(CliOption.newBoolean(USE_INLINE_MODEL_RESOLVER, "use the inline model resolver, if true inline complex models will be extracted into components and $refs to them will be used").
                 defaultValue(Boolean.FALSE.toString()));
+        CliOption nonCompliantUseDiscrIfCompositionFails = CliOption.newBoolean(CodegenConstants.NON_COMPLIANT_USE_DISCR_IF_COMPOSITION_FAILS, CodegenConstants.NON_COMPLIANT_USE_DISCR_IF_COMPOSITION_FAILS_DESC);
+        Map<String, String> nonCompliantUseDiscrIfCompositionFailsOpts = new HashMap<>();
+        nonCompliantUseDiscrIfCompositionFailsOpts.put("true", "If composition fails and a discriminator exists, the composition errors will be ignored and validation will be attempted with the discriminator");
+        nonCompliantUseDiscrIfCompositionFailsOpts.put("false", "Composition validation must succeed. Discriminator validation must succeed.");
+        nonCompliantUseDiscrIfCompositionFails.setEnum(nonCompliantUseDiscrIfCompositionFailsOpts);
+
+        cliOptions.add(nonCompliantUseDiscrIfCompositionFails);
 
         supportedLibraries.put("urllib3", "urllib3-based client");
         CliOption libraryOption = new CliOption(CodegenConstants.LIBRARY, "library template (sub-template) to use: urllib3");
@@ -230,6 +240,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         // When the 'additionalProperties' keyword is not present in a OAS schema, allow
         // undeclared properties. This is compliant with the JSON schema specification.
         this.setDisallowAdditionalPropertiesIfNotPresent(false);
+        GlobalSettings.setProperty("x-disallow-additional-properties-if-not-present", "false");
 
         // this may set datatype right for additional properties
         instantiationTypes.put("map", "dict");
@@ -363,6 +374,12 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             }
         }
 
+        if (additionalProperties.containsKey(CodegenConstants.NON_COMPLIANT_USE_DISCR_IF_COMPOSITION_FAILS)) {
+            nonCompliantUseDiscrIfCompositionFails = Boolean.parseBoolean(
+                    additionalProperties.get(CodegenConstants.NON_COMPLIANT_USE_DISCR_IF_COMPOSITION_FAILS).toString()
+            );
+        }
+
         String readmePath = "README.md";
         String readmeTemplate = "README." + templateExtension;
         if (generateSourceCodeOnly) {
@@ -479,13 +496,13 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         return apiFileFolder() + File.separator + toApiFilename(tag) + suffix;
     }
 
-    private void generateFiles(List<List<Object>> processTemplateToFileInfos, String skippedByOption) {
+    private void generateFiles(List<List<Object>> processTemplateToFileInfos, boolean shouldGenerate, String skippedByOption) {
         for (List<Object> processTemplateToFileInfo: processTemplateToFileInfos) {
             Map<String, Object> templateData = (Map<String, Object>) processTemplateToFileInfo.get(0);
             String templateName = (String) processTemplateToFileInfo.get(1);
             String outputFilename = (String) processTemplateToFileInfo.get(2);
             try {
-                processTemplateToFile(templateData, templateName, outputFilename, true, skippedByOption);
+                processTemplateToFile(templateData, templateName, outputFilename, shouldGenerate, skippedByOption);
             } catch (IOException e) {
                 LOGGER.error("Error when writing template file {}", e.toString());
             }
@@ -649,9 +666,11 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             outputFilename = packageFilename(Arrays.asList("apis", "paths", pathModule + ".py"));
             apisFiles.add(Arrays.asList(operationMap, "apis_path_module.handlebars", outputFilename));
         }
-        generateFiles(pathsFiles, CodegenConstants.APIS);
-        generateFiles(apisFiles, CodegenConstants.APIS);
-        generateFiles(testFiles, CodegenConstants.API_TESTS);
+        boolean shouldGenerateApis = (boolean) additionalProperties().get(CodegenConstants.GENERATE_APIS);
+        boolean shouldGenerateApiTests = (boolean) additionalProperties().get(CodegenConstants.GENERATE_API_TESTS);
+        generateFiles(pathsFiles, shouldGenerateApis, CodegenConstants.APIS);
+        generateFiles(apisFiles, shouldGenerateApis, CodegenConstants.APIS);
+        generateFiles(testFiles, shouldGenerateApiTests, CodegenConstants.API_TESTS);
     }
 
     /*
@@ -872,7 +891,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     @Override
     public String toModelImport(String name) {
         // name looks like Cat
-        return "from " + packagePath() + "." +  modelPackage() + "." + toModelFilename(name) + " import " + toModelName(name);
+        return "from " + packageName + "." +  modelPackage() + "." + toModelFilename(name) + " import " + toModelName(name);
     }
 
     @Override
@@ -908,7 +927,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
      * - fix the model imports, go from model name to the full import string with toModelImport + globalImportFixer
      * Also cleans the test folder if test cases exist and the testFolder is set because the tests are autogenerated
      *
-     * @param objs a map going from the model name to a object hoding the model info
+     * @param objs a map going from the model name to a object holding the model info
      * @return the updated objs
      */
     @Override
@@ -980,12 +999,13 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             }
         }
         // clone this so we can change some properties on it
-        CodegenProperty schemaProp = cp.getSchema().clone();
+        CodegenProperty schemaProp = cp.getSchema();
         // parameters may have valid python names like some_val or invalid ones like Content-Type
         // we always set nameInSnakeCase to null so special handling will not be done for these names
         // invalid python names will be handled in python by using a TypedDict which will allow us to have a type hint
         // for keys that cannot be variable names to the schema baseName
         if (schemaProp != null) {
+            schemaProp = schemaProp.clone();
             schemaProp.nameInSnakeCase = null;
             schemaProp.baseName = toModelName(cp.baseName) + "Schema";
             cp.setSchema(schemaProp);
@@ -1024,7 +1044,9 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             cp.isNullable = false;
             cp.setHasMultipleTypes(true);
         }
-        postProcessPattern(cp.pattern, cp.vendorExtensions);
+        if (p.getPattern() != null) {
+            postProcessPattern(p.getPattern(), cp.vendorExtensions);
+        }
         // if we have a property that has a difficult name, either:
         // 1. name is reserved, like class int float
         // 2. name is invalid in python like '3rd' or 'Content-Type'
@@ -1043,17 +1065,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         if (cp.isPrimitiveType && unaliasedSchema.get$ref() != null) {
             cp.complexType = cp.dataType;
         }
-        setAdditionalPropsAndItemsVarNames(cp);
         return cp;
-    }
-
-    private void setAdditionalPropsAndItemsVarNames(IJsonSchemaValidationProperties item) {
-        if (item.getAdditionalProperties() != null) {
-            item.getAdditionalProperties().setBaseName("additional_properties");
-        }
-        if (item.getItems() != null) {
-            item.getItems().setBaseName("items");
-        }
     }
 
     /**
@@ -1067,6 +1079,10 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     @Override
     public boolean isDataTypeString(String dataType) {
         return "str".equals(dataType);
+    }
+
+    protected String getItemsName(Schema containingSchema, String containingSchemaName) {
+        return "items";
     }
 
     /**
@@ -1114,7 +1130,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
      * We have a custom version of this method to produce links to models when they are
      * primitive type (not map, not array, not object) and include validations or are enums
      *
-     * @param body requesst body
+     * @param body request body
      * @param imports import collection
      * @param bodyParameterName body parameter name
      * @return the resultant CodegenParameter
@@ -1253,7 +1269,10 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         // Replace " " with _
         String usedValue = value.replaceAll("\\s+", "_");
         // strip first character if it is invalid
+        int lengthBeforeFirstCharStrip = usedValue.length();
+        Character firstChar = usedValue.charAt(0);
         usedValue = usedValue.replaceAll("^[^_a-zA-Z]", "");
+        boolean firstCharStripped = usedValue.length() == lengthBeforeFirstCharStrip - 1;
         // Replace / with _ for path enums
         usedValue = usedValue.replaceAll("/", "_");
         // Replace . with _ for tag enums
@@ -1276,6 +1295,14 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             // remove trailing _
             usedValue = usedValue.replaceAll("[_]$", "");
         }
+        // check first character to see if it is valid
+        // if not then add a valid prefix
+        boolean validFirstChar = Pattern.matches("^[_a-zA-Z]", usedValue.substring(0,1));
+        if (!validFirstChar && firstCharStripped) {
+            String charName = Character.getName(firstChar.hashCode());
+            usedValue = charNameToVarName(charName) + "_" + usedValue;
+        }
+
         return usedValue;
     }
 
@@ -1468,14 +1495,17 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     @Override
     public CodegenModel fromModel(String name, Schema sc) {
         CodegenModel cm = super.fromModel(name, sc);
-
+        if (sc.getPattern() != null) {
+            postProcessPattern(sc.getPattern(), cm.vendorExtensions);
+            String pattern = (String) cm.vendorExtensions.get("x-regex");
+            cm.setPattern(pattern);
+        }
         if (cm.isNullable) {
             cm.setIsNull(true);
             cm.isNullable = false;
             cm.setHasMultipleTypes(true);
         }
         Boolean isNotPythonModelSimpleModel = (ModelUtils.isComposedSchema(sc) || ModelUtils.isObjectSchema(sc) || ModelUtils.isMapSchema(sc));
-        setAdditionalPropsAndItemsVarNames(cm);
         if (isNotPythonModelSimpleModel) {
             return cm;
         }
@@ -1710,12 +1740,12 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
      * @param schema the schema that we need an example for
      * @param objExample the example that applies to this schema, for now only string example are used
      * @param indentationLevel integer indentation level that we are currently at
-     *                         we assume the indentaion amount is 4 spaces times this integer
+     *                         we assume the indentation amount is 4 spaces times this integer
      * @param prefix the string prefix that we will use when assigning an example for this line
      *               this is used when setting key: value, pairs "key: " is the prefix
      *               and this is used when setting properties like some_property='some_property_example'
-     * @param exampleLine this is the current line that we are generatign an example for, starts at 0
-     *                    we don't indentin the 0th line because using the example value looks like:
+     * @param exampleLine this is the current line that we are generating an example for, starts at 0
+     *                    we don't indent the 0th line because using the example value looks like:
      *                    prop = ModelName( line 0
      *                        some_property='some_property_example' line 1
      *                    ) line 2
@@ -1874,34 +1904,21 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
                 example = "2";
             } else if (StringUtils.isNotBlank(schema.getPattern())) {
                 String pattern = schema.getPattern();
+                List<Object> results = getPatternAndModifiers(pattern);
+                String extractedPattern = (String) results.get(0);
+                List<String> regexFlags = (List<String>) results.get(1);
                 /*
                 RxGen does not support our ECMA dialect https://github.com/curious-odd-man/RgxGen/issues/56
                 So strip off the leading / and trailing / and turn on ignore case if we have it
                  */
-                Pattern valueExtractor = Pattern.compile("^/?(.+?)/?(.?)$");
-                Matcher m = valueExtractor.matcher(pattern);
                 RgxGen rgxGen = null;
-                if (m.find()) {
-                    int groupCount = m.groupCount();
-                    if (groupCount == 1) {
-                        // only pattern found
-                        String isolatedPattern = m.group(1);
-                        rgxGen = new RgxGen(isolatedPattern);
-                    } else if (groupCount == 2) {
-                        // patterns and flag found
-                        String isolatedPattern = m.group(1);
-                        String flags = m.group(2);
-                        if (flags.contains("i")) {
-                            rgxGen = new RgxGen(isolatedPattern);
-                            RgxGenProperties properties = new RgxGenProperties();
-                            RgxGenOption.CASE_INSENSITIVE.setInProperties(properties, true);
-                            rgxGen.setProperties(properties);
-                        } else {
-                            rgxGen = new RgxGen(isolatedPattern);
-                        }
-                    }
+                if (regexFlags.size() > 0 && regexFlags.contains("i")) {
+                    rgxGen = new RgxGen(extractedPattern);
+                    RgxGenProperties properties = new RgxGenProperties();
+                    RgxGenOption.CASE_INSENSITIVE.setInProperties(properties, true);
+                    rgxGen.setProperties(properties);
                 } else {
-                    rgxGen = new RgxGen(pattern);
+                    rgxGen = new RgxGen(extractedPattern);
                 }
 
                 // this seed makes it so if we have [a-z] we pick a
@@ -2083,12 +2100,12 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             }
 
             example += toExampleValueRecursive(propModelName,
-                                               propSchema,
-                                               propExample,
-                                               indentationLevel + 1,
-                                               propName + "=",
-                                               exampleLine + 1,
-                                               includedSchemas) + ",\n";
+                    propSchema,
+                    propExample,
+                    indentationLevel + 1,
+                    propName + "=",
+                    exampleLine + 1,
+                    includedSchemas) + ",\n";
         }
 
         // TODO handle additionalProperties also
@@ -2237,9 +2254,9 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     /**
      * Use cases:
      * additional properties is unset: do nothing
-     * additional properties is true: add definiton to property
-     * additional properties is false: add definiton to property
-     * additional properties is schema: add definiton to property
+     * additional properties is true: add definition to property
+     * additional properties is false: add definition to property
+     * additional properties is schema: add definition to property
      *
      * @param schema the schema that may contain an additional property schema
      * @param property the property for the above schema
@@ -2250,7 +2267,7 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         if (addPropsSchema == null) {
             return;
         }
-        CodegenProperty addPropProp = fromProperty("",  addPropsSchema, false, false);
+        CodegenProperty addPropProp = fromProperty(getAdditionalPropertiesName(),  addPropsSchema, false, false);
         property.setAdditionalProperties(addPropProp);
     }
 
@@ -2339,6 +2356,16 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
             // isString stays true, format stores that this is a number
         }
         property.pattern = toRegularExpression(p.getPattern());
+    }
+
+    @Override
+    public String toRegularExpression(String pattern) {
+        if (pattern == null) {
+            return null;
+        }
+        List<Object> results = getPatternAndModifiers(pattern);
+        String extractedPattern = (String) results.get(0);
+        return extractedPattern;
     }
 
     protected void updatePropertyForNumber(CodegenProperty property, Schema p) {
@@ -2465,6 +2492,46 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
         return postProcessModelsEnum(objs);
     }
 
+    /**
+     * @param pattern the regex pattern
+     * @return List<String pattern, List<String modifier>>
+     */
+    private List<Object> getPatternAndModifiers(String pattern) {
+        /*
+        Notes:
+        RxGen does not support our ECMA dialect https://github.com/curious-odd-man/RgxGen/issues/56
+        So strip off the leading / and trailing / and turn on ignore case if we have it
+
+        json schema test cases omit the leading and trailing /s, so make sure that the regex allows that
+         */
+        Pattern valueExtractor = Pattern.compile("^/?(.+?)/?([simu]{0,4})$");
+        Matcher m = valueExtractor.matcher(pattern);
+        if (m.find()) {
+            int groupCount = m.groupCount();
+            if (groupCount == 1) {
+                // only pattern found
+                String isolatedPattern = m.group(1);
+                return Arrays.asList(isolatedPattern, null);
+            } else if (groupCount == 2) {
+                List<String> modifiers = new ArrayList<String>();
+                // patterns and flag found
+                String isolatedPattern = m.group(1);
+                String flags = m.group(2);
+                if (flags.contains("s")) {
+                    modifiers.add("DOTALL");
+                }
+                if (flags.contains("i")) {
+                    modifiers.add("IGNORECASE");
+                }
+                if (flags.contains("m")) {
+                    modifiers.add("MULTILINE");
+                }
+                return Arrays.asList(isolatedPattern, modifiers);
+            }
+        }
+        return Arrays.asList(pattern, new ArrayList<String>());
+    }
+
     /*
      * The OpenAPI pattern spec follows the Perl convention and style of modifiers. Python
      * does not support this in as natural a way so it needs to convert it. See
@@ -2472,28 +2539,14 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
      */
     public void postProcessPattern(String pattern, Map<String, Object> vendorExtensions) {
         if (pattern != null) {
-            int regexLength = pattern.length();
-            String regex = pattern;
-            int i = pattern.lastIndexOf('/');
-            if (regexLength >= 2 && pattern.charAt(0) == '/' && i != -1) {
-                // json schema tests do not include the leading and trailing slashes
-                // so I do not think that they are required
-                regex = pattern.substring(1, i);
-            }
-            regex = regex.replace("'", "\\'");
-            List<String> modifiers = new ArrayList<String>();
+            List<Object> results = getPatternAndModifiers(pattern);
+            String extractedPattern = (String) results.get(0);
+            List<String> modifiers = (List<String>) results.get(1);
 
-            if (i != -1) {
-                for (char c : pattern.substring(i).toCharArray()) {
-                    if (regexModifiers.containsKey(c)) {
-                        String modifier = regexModifiers.get(c);
-                        modifiers.add(modifier);
-                    }
-                }
+            vendorExtensions.put("x-regex", extractedPattern);
+            if (modifiers.size() > 0) {
+                vendorExtensions.put("x-modifiers", modifiers);
             }
-
-            vendorExtensions.put("x-regex", regex);
-            vendorExtensions.put("x-modifiers", modifiers);
         }
     }
 
@@ -2701,14 +2754,14 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     public void preprocessOpenAPI(OpenAPI openAPI) {
         String originalSpecVersion;
         String xOriginalSwaggerVersion = "x-original-swagger-version";
-        if (openAPI.getExtensions() != null && !openAPI.getExtensions().isEmpty() && openAPI.getExtensions().containsValue(xOriginalSwaggerVersion)) {
+        if (openAPI.getExtensions() != null && !openAPI.getExtensions().isEmpty() && openAPI.getExtensions().containsKey(xOriginalSwaggerVersion)) {
             originalSpecVersion = (String) openAPI.getExtensions().get(xOriginalSwaggerVersion);
         } else {
             originalSpecVersion = openAPI.getOpenapi();
         }
         Integer specMajorVersion = Integer.parseInt(originalSpecVersion.substring(0, 1));
         if (specMajorVersion < 3) {
-            throw new RuntimeException("Your spec version of "+originalSpecVersion+" is too low. python-experimental only works with specs with version >= 3.X.X. Please use a tool like Swagger Editor or Swagger Converter to convert your spec to v3");
+            throw new RuntimeException("Your spec version of "+originalSpecVersion+" is too low. " + getName() + " only works with specs with version >= 3.X.X. Please use a tool like Swagger Editor or Swagger Converter to convert your spec to v3");
         }
     }
 
@@ -2721,6 +2774,11 @@ public class PythonClientCodegen extends AbstractPythonCodegen {
     @Override
     public String sanitizeTag(String tag) {
         return tag;
+    }
+
+    public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
+        objs.put(CodegenConstants.NON_COMPLIANT_USE_DISCR_IF_COMPOSITION_FAILS, nonCompliantUseDiscrIfCompositionFails);
+        return objs;
     }
 
     @Override

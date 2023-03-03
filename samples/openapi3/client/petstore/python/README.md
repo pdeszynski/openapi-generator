@@ -140,7 +140,7 @@ import datetimeimport datetimeimport datetimeimport datetimeimport datetimeimpor
 import time
 import petstore_api
 from pprint import pprint
-from petstore_api.apis import another_fake_api
+from petstore_api.apis.tags import another_fake_api
 from petstore_api.model.client import Client
 # Defining the host is optional and defaults to http://petstore.swagger.io:80/v2
 # See configuration.py for a list of all supported configuration parameters.
@@ -197,7 +197,8 @@ Class | Method | HTTP request | Description
 *FakeApi* | [**object_in_query**](docs/apis/tags/FakeApi.md#object_in_query) | **get** /fake/objInQuery | user list
 *FakeApi* | [**object_model_with_ref_props**](docs/apis/tags/FakeApi.md#object_model_with_ref_props) | **post** /fake/refs/object_model_with_ref_props | 
 *FakeApi* | [**parameter_collisions**](docs/apis/tags/FakeApi.md#parameter_collisions) | **post** /fake/parameterCollisions/{1}/{aB}/{Ab}/{self}/{A-B}/ | parameter collision case
-*FakeApi* | [**query_parameter_collection_format**](docs/apis/tags/FakeApi.md#query_parameter_collection_format) | **put** /fake/test-query-paramters | 
+*FakeApi* | [**query_param_with_json_content_type**](docs/apis/tags/FakeApi.md#query_param_with_json_content_type) | **get** /fake/queryParamWithJsonContentType | query param with json content-type
+*FakeApi* | [**query_parameter_collection_format**](docs/apis/tags/FakeApi.md#query_parameter_collection_format) | **put** /fake/test-query-parameters | 
 *FakeApi* | [**ref_object_in_query**](docs/apis/tags/FakeApi.md#ref_object_in_query) | **get** /fake/refObjInQuery | user list
 *FakeApi* | [**response_without_schema**](docs/apis/tags/FakeApi.md#response_without_schema) | **get** /fake/responseWithoutSchema | receives a response without schema
 *FakeApi* | [**string**](docs/apis/tags/FakeApi.md#string) | **post** /fake/refs/string | 
@@ -284,6 +285,7 @@ Class | Method | HTTP request | Description
  - [FileSchemaTestClass](docs/models/FileSchemaTestClass.md)
  - [Foo](docs/models/Foo.md)
  - [FormatTest](docs/models/FormatTest.md)
+ - [FromSchema](docs/models/FromSchema.md)
  - [Fruit](docs/models/Fruit.md)
  - [FruitReq](docs/models/FruitReq.md)
  - [GmFruit](docs/models/GmFruit.md)
@@ -316,10 +318,14 @@ Class | Method | HTTP request | Description
  - [NumberOnly](docs/models/NumberOnly.md)
  - [NumberWithValidations](docs/models/NumberWithValidations.md)
  - [ObjectInterface](docs/models/ObjectInterface.md)
+ - [ObjectModelWithArgAndArgsProperties](docs/models/ObjectModelWithArgAndArgsProperties.md)
  - [ObjectModelWithRefProps](docs/models/ObjectModelWithRefProps.md)
+ - [ObjectWithAllOfWithReqTestPropFromUnsetAddProp](docs/models/ObjectWithAllOfWithReqTestPropFromUnsetAddProp.md)
  - [ObjectWithDecimalProperties](docs/models/ObjectWithDecimalProperties.md)
  - [ObjectWithDifficultlyNamedProps](docs/models/ObjectWithDifficultlyNamedProps.md)
  - [ObjectWithInlineCompositionProperty](docs/models/ObjectWithInlineCompositionProperty.md)
+ - [ObjectWithInvalidNamedRefedProperties](docs/models/ObjectWithInvalidNamedRefedProperties.md)
+ - [ObjectWithOptionalTestProp](docs/models/ObjectWithOptionalTestProp.md)
  - [ObjectWithValidations](docs/models/ObjectWithValidations.md)
  - [Order](docs/models/Order.md)
  - [ParentPet](docs/models/ParentPet.md)
@@ -351,6 +357,16 @@ Class | Method | HTTP request | Description
 ## Documentation For Authorization
 
 
+## petstore_auth
+
+- **Type**: OAuth
+- **Flow**: implicit
+- **Authorization URL**: http://petstore.swagger.io/api/oauth/dialog
+- **Scopes**: 
+ - **write:pets**: modify pets in your account
+ - **read:pets**: read your pets
+
+
 ## api_key
 
 - **Type**: API key
@@ -365,29 +381,19 @@ Class | Method | HTTP request | Description
 - **Location**: URL query string
 
 
-## bearer_test
-
-- **Type**: Bearer authentication (JWT)
-
-
 ## http_basic_test
 
 - **Type**: HTTP basic authentication
 
 
+## bearer_test
+
+- **Type**: Bearer authentication (JWT)
+
+ Authentication schemes defined for the API:
 ## http_signature_test
 
 - **Type**: HTTP signature authentication
-
- Authentication schemes defined for the API:
-## petstore_auth
-
-- **Type**: OAuth
-- **Flow**: implicit
-- **Authorization URL**: http://petstore.swagger.io/api/oauth/dialog
-- **Scopes**: 
- - **write:pets**: modify pets in your account
- - **read:pets**: read your pets
 
 
 ## Author
